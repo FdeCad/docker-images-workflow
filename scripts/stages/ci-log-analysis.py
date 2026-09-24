@@ -17,7 +17,7 @@ PROJECT_ROOT = str(Path(__file__).resolve().parent.parent.parent)
 sys.path.insert(0, PROJECT_ROOT)
 
 from scripts.lib.ai_runner import run_agent
-from scripts.lib.stage_common import agent_prompt_file, log_stage, get_conventions_file
+from scripts.lib.stage_common import agent_prompt_file, log_stage, get_conventions_file, dispatch_phase
 from scripts.lib.ci_api import get_api
 from scripts.lib import ci_data
 
@@ -52,32 +52,19 @@ def parse_env() -> dict:
     }
 
 
-def dispatch_code_fix(env: dict):
-    target_repo = os.getenv('GITHUB_REPOSITORY', 'sunshuang1866/docker-images-workflow')
-    payload = {
-        'event_type': 'run-ci-fix-phase',
-        'client_payload': {
-            'phase': 'code-fix',
-            'source_repo': env['source_repo'],
-            'source_platform': env['source_platform'],
-            'pr_number': env['pr_number'],
-            'pr_title': env['pr_title'],
-            'pr_head_sha': env['head_sha'],
-            'fix_branch': env['fix_branch'],
-            'pr_base_branch': env['pr_base_branch'],
-            # analysis 已写入 ci-data 分支，不再通过 payload 传递
-        }
-    }
-    url = f"https://api.github.com/repos/{target_repo}/dispatches"
-    headers = {
-        'Authorization': f"token {env['dispatch_token']}",
-        'Accept': 'application/vnd.github.v3+json',
-    }
-    resp = requests.post(url, headers=headers, json=payload, timeout=30)
-    if resp.status_code == 204:
-        log_stage('ci-log-analysis', f'✅ Dispatched code-fix for PR #{env["pr_number"]}')
-    else:
-        raise RuntimeError(f'Dispatch code-fix failed HTTP {resp.status_code}: {resp.text}')
+def dispatch_build_fix(env: dict):
+    """推进到 build-fix 阶段（arm64 首修）。"""
+    dispatch_phase({
+        'phase': 'build-fix',
+        'arch': 'arm64',
+        'source_repo': env['source_repo'],
+        'source_platform': env['source_platform'],
+        'pr_number': env['pr_number'],
+        'pr_title': env['pr_title'],
+        'pr_head_sha': env['head_sha'],
+        'fix_branch': env['fix_branch'],
+        'pr_base_branch': env['pr_base_branch'],
+    })
 
 
 def main():
@@ -173,8 +160,8 @@ def main():
     except Exception as e:
         log_stage('ci-log-analysis', f'⚠️ ci-data write failed: {e}')
 
-    # 自动推进到 code-fix 阶段（analysis 已在 ci-data 分支，不再通过 payload 传递）
-    dispatch_code_fix(env)
+    # 自动推进到 build-fix 阶段（analysis 已在 ci-data 分支，作为 build agent 的提示）
+    dispatch_build_fix(env)
     log_stage('ci-log-analysis', '✅ done')
 
 

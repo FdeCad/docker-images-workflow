@@ -103,6 +103,20 @@ def fix_notified_path(pr_number: int) -> str:
     return f"ci-fix-log/{pr_number}/fix-notified"
 
 
+def derived_dockerfile_path(pr_number: int) -> str:
+    """build 阶段反推出的最终 Dockerfile 内容（arm 冻结版 → amd64 更新版）。"""
+    return f"ci-fix-log/{pr_number}/derived-dockerfile"
+
+
+def dockerfile_target_path(pr_number: int) -> str:
+    """被修复的 Dockerfile 在源仓库中的相对路径（如 AI/mlflow/3.12.0/Dockerfile）。"""
+    return f"ci-fix-log/{pr_number}/dockerfile-target"
+
+
+def build_log_path(pr_number: int, arch: str) -> str:
+    return f"ci-fix-log/{pr_number}/build-log-{arch}.md"
+
+
 def is_fix_notified(pr_number: int) -> bool:
     return bool(read_file(fix_notified_path(pr_number), branch=CI_FIX_BRANCH))
 

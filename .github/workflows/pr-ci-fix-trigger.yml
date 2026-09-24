@@ -109,7 +109,271 @@ jobs:
         if: failure()
         run: echo "⚠️ ci-log-analysis failed, check workflow logs"
 
-  # ── 阶段 2: 代码修复 ────────────────────────────────────────────
+  # ── 阶段 2: 容器构建修复（arm64 首修 → amd64 续修）───────────────
+  build-fix-arm64:
+    runs-on: [self-hosted, ARM64]
+    timeout-minutes: 240
+    if: |
+      github.event.action == 'run-ci-fix-phase' &&
+      github.event.client_payload.phase == 'build-fix' &&
+      github.event.client_payload.arch == 'arm64'
+    env:
+      SOURCE_REPO: ${{ github.event.client_payload.source_repo }}
+      SOURCE_PLATFORM: ${{ github.event.client_payload.source_platform || 'github' }}
+      PR_NUMBER: ${{ github.event.client_payload.pr_number }}
+      PR_TITLE: ${{ github.event.client_payload.pr_title }}
+      PR_HEAD_SHA: ${{ github.event.client_payload.pr_head_sha }}
+      FIX_BRANCH: ${{ github.event.client_payload.fix_branch }}
+      PR_BASE_BRANCH: ${{ github.event.client_payload.pr_base_branch }}
+      ARCH: arm64
+      MODE: build
+      VERIFY_COUNT: ${{ github.event.client_payload.verify_count || '0' }}
+      GITHUB_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+      DISPATCH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+      GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN || '' }}
+
+    steps:
+      - name: Checkout docker-images-workflow
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Checkout source repo (GitHub)
+        if: env.SOURCE_PLATFORM != 'gitcode'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.client_payload.source_repo }}
+          token: ${{ secrets.DISPATCH_TOKEN }}
+          fetch-depth: 0
+          path: source-repo
+
+      - name: Checkout source repo (GitCode)
+        if: env.SOURCE_PLATFORM == 'gitcode'
+        run: |
+          git clone \
+            https://oauth2:${{ secrets.GITCODE_TOKEN }}@gitcode.com/${{ env.SOURCE_REPO }}.git \
+            source-repo
+
+      - name: Checkout PR head
+        run: |
+          cd source-repo
+          if [ "$SOURCE_PLATFORM" = "gitcode" ]; then
+            git fetch origin refs/merge-requests/${{ env.PR_NUMBER }}/head:pr-head 2>/dev/null || \
+              git fetch origin ${{ env.PR_HEAD_SHA }} 2>/dev/null || true
+            git checkout pr-head 2>/dev/null || git checkout ${{ env.PR_HEAD_SHA }}
+          else
+            git fetch origin pull/${{ env.PR_NUMBER }}/head
+            git checkout FETCH_HEAD
+          fi
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Setup Claude Code account credentials
+        if: env.AI_RUNNER == 'claude-code-account'
+        env:
+          CLAUDE_CREDENTIALS_JSON: ${{ secrets.CLAUDE_CREDENTIALS_JSON }}
+        run: |
+          mkdir -p ~/.claude
+          echo "$CLAUDE_CREDENTIALS_JSON" > ~/.claude/.credentials.json
+          chmod 600 ~/.claude/.credentials.json
+
+      - name: Install AI Agent
+        run: |
+          if [ "$AI_RUNNER" = "claude-code-account" ]; then
+            npm install -g @anthropic-ai/claude-code
+            claude --version
+          else
+            npm install -g opencode-ai
+            opencode --version
+          fi
+
+      - name: Load conventions
+        run: python scripts/lib/discover_conventions.py source-repo source-conventions.md
+
+      - name: Run 容器构建修复
+        run: python scripts/stages/build-fix.py
+
+      - name: Mark failed
+        if: failure()
+        run: echo "⚠️ build-fix-arm64 (${{ env.ARCH }}) failed, check workflow logs"
+
+  build-fix-amd64:
+    runs-on: [self-hosted, AMD64]
+    timeout-minutes: 240
+    if: |
+      github.event.action == 'run-ci-fix-phase' &&
+      github.event.client_payload.phase == 'build-fix' &&
+      github.event.client_payload.arch == 'amd64'
+    env:
+      SOURCE_REPO: ${{ github.event.client_payload.source_repo }}
+      SOURCE_PLATFORM: ${{ github.event.client_payload.source_platform || 'github' }}
+      PR_NUMBER: ${{ github.event.client_payload.pr_number }}
+      PR_TITLE: ${{ github.event.client_payload.pr_title }}
+      PR_HEAD_SHA: ${{ github.event.client_payload.pr_head_sha }}
+      FIX_BRANCH: ${{ github.event.client_payload.fix_branch }}
+      PR_BASE_BRANCH: ${{ github.event.client_payload.pr_base_branch }}
+      ARCH: amd64
+      MODE: build
+      VERIFY_COUNT: ${{ github.event.client_payload.verify_count || '0' }}
+      GITHUB_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+      DISPATCH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+      GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN || '' }}
+
+    steps:
+      - name: Checkout docker-images-workflow
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Checkout source repo (GitHub)
+        if: env.SOURCE_PLATFORM != 'gitcode'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.client_payload.source_repo }}
+          token: ${{ secrets.DISPATCH_TOKEN }}
+          fetch-depth: 0
+          path: source-repo
+
+      - name: Checkout source repo (GitCode)
+        if: env.SOURCE_PLATFORM == 'gitcode'
+        run: |
+          git clone \
+            https://oauth2:${{ secrets.GITCODE_TOKEN }}@gitcode.com/${{ env.SOURCE_REPO }}.git \
+            source-repo
+
+      - name: Checkout PR head
+        run: |
+          cd source-repo
+          if [ "$SOURCE_PLATFORM" = "gitcode" ]; then
+            git fetch origin refs/merge-requests/${{ env.PR_NUMBER }}/head:pr-head 2>/dev/null || \
+              git fetch origin ${{ env.PR_HEAD_SHA }} 2>/dev/null || true
+            git checkout pr-head 2>/dev/null || git checkout ${{ env.PR_HEAD_SHA }}
+          else
+            git fetch origin pull/${{ env.PR_NUMBER }}/head
+            git checkout FETCH_HEAD
+          fi
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Setup Claude Code account credentials
+        if: env.AI_RUNNER == 'claude-code-account'
+        env:
+          CLAUDE_CREDENTIALS_JSON: ${{ secrets.CLAUDE_CREDENTIALS_JSON }}
+        run: |
+          mkdir -p ~/.claude
+          echo "$CLAUDE_CREDENTIALS_JSON" > ~/.claude/.credentials.json
+          chmod 600 ~/.claude/.credentials.json
+
+      - name: Install AI Agent
+        run: |
+          if [ "$AI_RUNNER" = "claude-code-account" ]; then
+            npm install -g @anthropic-ai/claude-code
+            claude --version
+          else
+            npm install -g opencode-ai
+            opencode --version
+          fi
+
+      - name: Load conventions
+        run: python scripts/lib/discover_conventions.py source-repo source-conventions.md
+
+      - name: Run 容器构建修复
+        run: python scripts/stages/build-fix.py
+
+      - name: Mark failed
+        if: failure()
+        run: echo "⚠️ build-fix-amd64 (${{ env.ARCH }}) failed, check workflow logs"
+
+  # ── 阶段 3: arm64 复验（确定性 docker build，无 AI）──────────────
+  verify-arm:
+    runs-on: [self-hosted, ARM64]
+    timeout-minutes: 120
+    if: |
+      github.event.action == 'run-ci-fix-phase' &&
+      github.event.client_payload.phase == 'verify-arm'
+    env:
+      SOURCE_REPO: ${{ github.event.client_payload.source_repo }}
+      SOURCE_PLATFORM: ${{ github.event.client_payload.source_platform || 'github' }}
+      PR_NUMBER: ${{ github.event.client_payload.pr_number }}
+      PR_TITLE: ${{ github.event.client_payload.pr_title }}
+      PR_HEAD_SHA: ${{ github.event.client_payload.pr_head_sha }}
+      FIX_BRANCH: ${{ github.event.client_payload.fix_branch }}
+      PR_BASE_BRANCH: ${{ github.event.client_payload.pr_base_branch }}
+      ARCH: arm64
+      MODE: verify
+      VERIFY_COUNT: ${{ github.event.client_payload.verify_count || '0' }}
+      GITHUB_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+      DISPATCH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+      GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN || '' }}
+
+    steps:
+      - name: Checkout docker-images-workflow
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Checkout source repo (GitHub)
+        if: env.SOURCE_PLATFORM != 'gitcode'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.client_payload.source_repo }}
+          token: ${{ secrets.DISPATCH_TOKEN }}
+          fetch-depth: 0
+          path: source-repo
+
+      - name: Checkout source repo (GitCode)
+        if: env.SOURCE_PLATFORM == 'gitcode'
+        run: |
+          git clone \
+            https://oauth2:${{ secrets.GITCODE_TOKEN }}@gitcode.com/${{ env.SOURCE_REPO }}.git \
+            source-repo
+
+      - name: Checkout PR head
+        run: |
+          cd source-repo
+          if [ "$SOURCE_PLATFORM" = "gitcode" ]; then
+            git fetch origin refs/merge-requests/${{ env.PR_NUMBER }}/head:pr-head 2>/dev/null || \
+              git fetch origin ${{ env.PR_HEAD_SHA }} 2>/dev/null || true
+            git checkout pr-head 2>/dev/null || git checkout ${{ env.PR_HEAD_SHA }}
+          else
+            git fetch origin pull/${{ env.PR_NUMBER }}/head
+            git checkout FETCH_HEAD
+          fi
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run arm64 复验
+        run: python scripts/stages/build-fix.py
+
+      - name: Mark failed
+        if: failure()
+        run: echo "⚠️ verify-arm failed, check workflow logs"
+
+  # ── 阶段 4: 应用修复 ────────────────────────────────────────────
   code-fix:
     runs-on: ubuntu-latest
     if: |
@@ -192,29 +456,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Setup Claude Code account credentials
-        if: env.AI_RUNNER == 'claude-code-account'
-        env:
-          CLAUDE_CREDENTIALS_JSON: ${{ secrets.CLAUDE_CREDENTIALS_JSON }}
-        run: |
-          mkdir -p ~/.claude
-          echo "$CLAUDE_CREDENTIALS_JSON" > ~/.claude/.credentials.json
-          chmod 600 ~/.claude/.credentials.json
-
-      - name: Install AI Agent
-        run: |
-          if [ "$AI_RUNNER" = "claude-code-account" ]; then
-            npm install -g @anthropic-ai/claude-code
-            claude --version
-          else
-            npm install -g opencode-ai
-            opencode --version
-          fi
-
-      - name: Load conventions
-        run: python scripts/lib/discover_conventions.py source-repo source-conventions.md
-
-      - name: Run 代码修复
+      - name: Run 应用修复
         id: code_fix
         run: python scripts/stages/code-fix.py
 
