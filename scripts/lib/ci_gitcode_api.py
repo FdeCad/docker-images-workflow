@@ -144,6 +144,17 @@ def get_pr_file_names(repo: str, pr_number: int, token: str) -> List[str]:
             if f.get('filename') or f.get('new_path')]
 
 
+def get_pr_detail(repo: str, pr_number: int, token: str) -> Optional[Dict]:
+    """按编号获取 PR 详情（含 head.sha / title / base.ref）。不存在返回 None。"""
+    owner, name, _ = parse_repo(repo)
+    url = f"{GITCODE_BASE}/api/v5/repos/{owner}/{name}/pulls/{pr_number}"
+    resp = requests.get(url, params={'access_token': token}, timeout=30)
+    if resp.status_code == 404:
+        return None
+    resp.raise_for_status()
+    return resp.json()
+
+
 def get_branch_commit_count(repo: str, branch: str, base_branch: str, token: str) -> int:
     owner, name, _ = parse_repo(repo)
     url = f"{GITCODE_BASE}/api/v5/repos/{owner}/{name}/compare/{base_branch}...{branch}"

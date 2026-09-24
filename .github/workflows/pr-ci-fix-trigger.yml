@@ -1,6 +1,19 @@
 name: "ci-fix-team: PR CI 修复链路"
 
 on:
+  workflow_dispatch:
+    inputs:
+      source_repo:
+        description: '目标仓库（owner/repo，如 openeuler/openeuler-docker-images）'
+        required: true
+        default: 'openeuler/openeuler-docker-images'
+      pr_number:
+        description: 'PR 编号'
+        required: true
+      source_platform:
+        description: '平台：gitcode / github'
+        required: false
+        default: 'gitcode'
   repository_dispatch:
     types: [run-ci-fix-phase]
 
@@ -27,6 +40,36 @@ env:
   OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL || '' }}
 
 jobs:
+
+  # ── 手动触发入口（workflow_dispatch）─────────────────────────────
+  manual-trigger:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    env:
+      SOURCE_REPO: ${{ github.event.inputs.source_repo }}
+      SOURCE_PLATFORM: ${{ github.event.inputs.source_platform }}
+      PR_NUMBER: ${{ github.event.inputs.pr_number }}
+      GITHUB_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+      DISPATCH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+      GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN || '' }}
+    steps:
+      - name: Checkout docker-images-workflow
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Dispatch ci-log-analysis
+        run: python scripts/watch/manual_trigger.py
 
   # ── 阶段 1: CI 日志分析 ──────────────────────────────────────────
   ci-log-analysis:
