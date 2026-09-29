@@ -233,7 +233,10 @@ jobs:
           echo "using $PY ($("$PY" --version 2>&1))"
           "$PY" -m venv "$RUNNER_TEMP/ci-fix-venv"
           echo "$RUNNER_TEMP/ci-fix-venv/bin" >> "$GITHUB_PATH"
-          python --version
+          # $GITHUB_PATH 只在 step 结束时被读取并作用于后续 step，当前 step 的 PATH
+          # 不会更新，直接写 `python --version` 必然 command not found（exit 127）。
+          # 用显式路径做同样的校验。
+          "$RUNNER_TEMP/ci-fix-venv/bin/python" --version
 
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
@@ -345,7 +348,10 @@ jobs:
           echo "using $PY ($("$PY" --version 2>&1))"
           "$PY" -m venv "$RUNNER_TEMP/ci-fix-venv"
           echo "$RUNNER_TEMP/ci-fix-venv/bin" >> "$GITHUB_PATH"
-          python --version
+          # $GITHUB_PATH 只在 step 结束时被读取并作用于后续 step，当前 step 的 PATH
+          # 不会更新，直接写 `python --version` 必然 command not found（exit 127）。
+          # 用显式路径做同样的校验。
+          "$RUNNER_TEMP/ci-fix-venv/bin/python" --version
 
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
@@ -456,7 +462,10 @@ jobs:
           echo "using $PY ($("$PY" --version 2>&1))"
           "$PY" -m venv "$RUNNER_TEMP/ci-fix-venv"
           echo "$RUNNER_TEMP/ci-fix-venv/bin" >> "$GITHUB_PATH"
-          python --version
+          # $GITHUB_PATH 只在 step 结束时被读取并作用于后续 step，当前 step 的 PATH
+          # 不会更新，直接写 `python --version` 必然 command not found（exit 127）。
+          # 用显式路径做同样的校验。
+          "$RUNNER_TEMP/ci-fix-venv/bin/python" --version
 
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
