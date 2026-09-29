@@ -102,10 +102,11 @@ verify-arm 若失败：回 `build-fix (amd64)` 再修（`verify_count` 递增，
 
 1. 安装 GitHub self-hosted runner，打标签：
    - arm64 机器 → 标签 `self-hosted, ARM64`
-   - amd64 机器 → 标签 `self-hosted, AMD64`
+   - amd64 机器 → 标签 `self-hosted, X64`（⚠️ x86_64 的自动架构标签是 `X64`，不是 `AMD64`）
 2. runner 用户加入 `docker` 组，能免 sudo 执行 `docker run` / `docker exec` / `docker build`
 3. 能访问网络拉取基础镜像（如 openEuler 官方镜像）与目标仓库
-4. Python 3.11（`actions/setup-python` 会自动安装）
+4. Python 3.11+：自托管 job 用 `Setup Python (openEuler 系统解释器)` 步骤从系统解释器建 venv（**不是** `actions/setup-python`，该 action 只用在 ubuntu-latest 的 job 上），要求 `>= 3.10`
+5. Node.js（含 npm）：`build-fix` 阶段用 `npm install -g opencode-ai` 装 AI Agent，GitHub 托管 runner 预装了 Node，自托管机器通常没有
 
 工作流的 `build-fix` job 通过 `matrix.arch` 选择对应的 runner 标签。
 

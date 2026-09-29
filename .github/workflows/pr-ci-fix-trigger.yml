@@ -137,6 +137,13 @@ jobs:
 
       - name: Install AI Agent
         run: |
+          # npm 缺失时只会得到一句 `npm: command not found`（exit 127），与 PATH
+          # 配置错误、包安装失败等完全无法区分。GitHub 托管 runner 自带 Node，
+          # 自托管 runner（如 openEuler 最小化安装）没有，这里提前给出可操作的提示。
+          if ! command -v npm >/dev/null 2>&1; then
+            echo "::error::未找到 npm，无法安装 AI Agent（AI_RUNNER=$AI_RUNNER）。请在该 runner 上先安装 Node.js：sudo dnf install -y nodejs npm（macOS 用 brew install node）"
+            exit 1
+          fi
           if [ "$AI_RUNNER" = "claude-code-account" ]; then
             npm install -g @anthropic-ai/claude-code
             claude --version
@@ -252,6 +259,13 @@ jobs:
 
       - name: Install AI Agent
         run: |
+          # npm 缺失时只会得到一句 `npm: command not found`（exit 127），与 PATH
+          # 配置错误、包安装失败等完全无法区分。GitHub 托管 runner 自带 Node，
+          # 自托管 runner（如 openEuler 最小化安装）没有，这里提前给出可操作的提示。
+          if ! command -v npm >/dev/null 2>&1; then
+            echo "::error::未找到 npm，无法安装 AI Agent（AI_RUNNER=$AI_RUNNER）。请在该 runner 上先安装 Node.js：sudo dnf install -y nodejs npm（macOS 用 brew install node）"
+            exit 1
+          fi
           if [ "$AI_RUNNER" = "claude-code-account" ]; then
             npm install -g @anthropic-ai/claude-code
             claude --version
@@ -367,6 +381,13 @@ jobs:
 
       - name: Install AI Agent
         run: |
+          # npm 缺失时只会得到一句 `npm: command not found`（exit 127），与 PATH
+          # 配置错误、包安装失败等完全无法区分。GitHub 托管 runner 自带 Node，
+          # 自托管 runner（如 openEuler 最小化安装）没有，这里提前给出可操作的提示。
+          if ! command -v npm >/dev/null 2>&1; then
+            echo "::error::未找到 npm，无法安装 AI Agent（AI_RUNNER=$AI_RUNNER）。请在该 runner 上先安装 Node.js：sudo dnf install -y nodejs npm（macOS 用 brew install node）"
+            exit 1
+          fi
           if [ "$AI_RUNNER" = "claude-code-account" ]; then
             npm install -g @anthropic-ai/claude-code
             claude --version

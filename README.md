@@ -148,7 +148,10 @@ Fork `sunshuang1866/docker-images-workflow` 到你的 GitHub 账号，后续在 
 1. 各安装 GitHub self-hosted runner，**注册时的默认标签即可**：arm64 → `self-hosted, Linux, ARM64`；amd64 → `self-hosted, Linux, X64`。
    ⚠️ x86_64 的自动架构标签是 **`X64`**，不是 `AMD64`——写成 `AMD64` 且没手动 `--labels AMD64` 的话，`build-fix-amd64` 会找不到 runner 一直挂到超时
 2. runner 用户加入 `docker` 组，能免 sudo 执行 `docker run` / `docker exec` / `docker build`
-3. 能访问网络拉取基础镜像（如 openEuler 官方镜像）
+3. 安装 **Python 3.11+**：自托管 job 用 `Setup Python (openEuler 系统解释器)` 步骤从系统解释器建 venv（**不是** `actions/setup-python`），要求 `>= 3.10`。openEuler 22.03 自带 3.9 不满足，需先装 python3.11+
+4. 安装 **Node.js**（含 npm）：`build-fix` 阶段依赖 `npm install -g opencode-ai` 安装 AI Agent。
+   GitHub 托管 runner 预装了 Node，自托管机器（如 openEuler 最小化安装）通常没有，缺了会在 `Install AI Agent` 处报 `npm: command not found`（工作流已加前置检查，会直接指明原因）。openEuler 上 `sudo dnf install -y nodejs npm` 即可，`opencode-ai` 未声明 `engines` 下限，装现代版本即可（建议 20 LTS）
+5. 能访问网络拉取基础镜像（如 openEuler 官方镜像）
 
 若未接入自托管 runner，`build-fix` 阶段会因找不到匹配标签的 runner 而挂起。详见 [docs/design/container-build-workflow.md](docs/design/container-build-workflow.md)。
 
