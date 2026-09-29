@@ -33,6 +33,29 @@ def log(msg: str):
     print(f"[{ts}] opencode {msg}", file=sys.stderr)
 
 
+def opencode_log_tail(max_lines: int = 40) -> str:
+    """读取 opencode 自身日志（~/.local/share/opencode/log）的末尾若干行。
+
+    CLI 只把一个通用错误包装成 UnknownError 吐到 stderr，真实原因（凭证缺失、
+    模型未解析、上游报错）只写在这里。失败时随异常一起带出，否则无从定位。
+    """
+    try:
+        base = os.getenv('XDG_DATA_HOME') or os.path.join(
+            os.path.expanduser('~'), '.local', 'share')
+        log_dir = os.path.join(base, 'opencode', 'log')
+        files = [os.path.join(log_dir, f) for f in os.listdir(log_dir)]
+        files = [f for f in files if os.path.isfile(f)]
+        if not files:
+            return f'（{log_dir} 下没有日志文件）'
+        newest = max(files, key=os.path.getmtime)
+        with open(newest, 'r', encoding='utf-8', errors='replace') as fh:
+            lines = fh.read().splitlines()
+        return f'{newest}（末 {min(max_lines, len(lines))} 行）:\n' + \
+               '\n'.join(lines[-max_lines:])
+    except Exception as e:  # 日志缺失不应掩盖原始错误
+        return f'（读取 opencode 日志失败: {e}）'
+
+
 def run_opencode(
     prompt_file: str,
     context: Dict[str, Any],
@@ -256,6 +279,7 @@ def run_opencode(
                     f'opencode [{label}] exit {process.returncode} '
                     f'但未生成 outputFile {output_file}。\n'
                     f'stderr: {stderr_text[:2000]}\n'
+                    f'{opencode_log_tail()}\n'
                     f'replay: cd {work_dir} && cat {prompt_dump_file} | {opencode_bin} {" ".join(opencode_args)}'
                 )
             
@@ -269,6 +293,7 @@ def run_opencode(
             raise RuntimeError(
                 f'opencode [{label}] exit {process.returncode} in {duration:.1f}s, '
                 f'但未找到 outputFile {output_file}。\n'
+                f'{opencode_log_tail()}\n'
                 f'replay: cd {work_dir} && cat {prompt_dump_file} | {opencode_bin} {" ".join(opencode_args)}'
             )
         

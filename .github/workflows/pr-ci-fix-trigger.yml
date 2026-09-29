@@ -18,8 +18,11 @@ on:
     types: [run-ci-fix-phase]
 
 # 同一个 PR 的修复串行执行，避免并发冲突
+# workflow_dispatch 没有 client_payload，需回退到 inputs，否则手动触发会求值成
+# `ci-fix--` 而与其他手动触发挤在同一个组里排队，且与它自身 dispatch 出去的运行
+# （组名按 PR 号）分属两组，串行保护失效。
 concurrency:
-  group: ci-fix-${{ github.event.client_payload.source_repo }}-${{ github.event.client_payload.pr_number }}
+  group: ci-fix-${{ github.event.client_payload.source_repo || github.event.inputs.source_repo }}-${{ github.event.client_payload.pr_number || github.event.inputs.pr_number }}
   cancel-in-progress: false
 
 permissions:
@@ -154,7 +157,7 @@ jobs:
 
   # ── 阶段 2: 容器构建修复（arm64 首修 → amd64 续修）───────────────
   build-fix-arm64:
-    runs-on: [self-hosted, ARM64]
+    runs-on: [self-hosted, Linux, ARM64]
     timeout-minutes: 240
     if: |
       github.event.action == 'run-ci-fix-phase' &&
@@ -209,15 +212,31 @@ jobs:
             git checkout FETCH_HEAD
           fi
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+      # 自托管 runner 是 openEuler：actions/setup-python 没有对应发行版的预编译包，
+      # 且系统里只有 python3、没有 python（后续步骤却全写 `python ...`）。
+      # 挑一个 >= 3.10 的解释器（ci_data.py 用了 PEP 604 的 `str | None`，无 future
+      # import，openEuler 22.03 自带的 3.9 在 import 阶段就会 TypeError），
+      # 建 venv 并把它的 bin 前置到 PATH，python / python3 / pip 就都有了。
+      - name: Setup Python (openEuler 系统解释器)
+        run: |
+          PY=""
+          for c in python3.13 python3.12 python3.11 python3.10 python3; do
+            if command -v "$c" >/dev/null 2>&1 &&
+               "$c" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)'; then
+              PY="$c"; break
+            fi
+          done
+          if [ -z "$PY" ]; then
+            echo "::error::需要 Python >= 3.10，但只找到 $("python3" --version 2>&1)。openEuler 22.03 自带 3.9，请先安装 python3.11+ 再重跑。"
+            exit 1
+          fi
+          echo "using $PY ($("$PY" --version 2>&1))"
+          "$PY" -m venv "$RUNNER_TEMP/ci-fix-venv"
+          echo "$RUNNER_TEMP/ci-fix-venv/bin" >> "$GITHUB_PATH"
+          python --version
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+        run: python -m pip install -r requirements.txt
 
       - name: Setup Claude Code account credentials
         if: env.AI_RUNNER == 'claude-code-account'
@@ -249,7 +268,8 @@ jobs:
         run: echo "⚠️ build-fix-arm64 (${{ env.ARCH }}) failed, check workflow logs"
 
   build-fix-amd64:
-    runs-on: [self-hosted, AMD64]
+    # 注册 runner 时 x86_64 的自动标签是 X64（不是 AMD64），写错会一直 pending 到超时
+    runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 240
     if: |
       github.event.action == 'run-ci-fix-phase' &&
@@ -304,15 +324,31 @@ jobs:
             git checkout FETCH_HEAD
           fi
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+      # 自托管 runner 是 openEuler：actions/setup-python 没有对应发行版的预编译包，
+      # 且系统里只有 python3、没有 python（后续步骤却全写 `python ...`）。
+      # 挑一个 >= 3.10 的解释器（ci_data.py 用了 PEP 604 的 `str | None`，无 future
+      # import，openEuler 22.03 自带的 3.9 在 import 阶段就会 TypeError），
+      # 建 venv 并把它的 bin 前置到 PATH，python / python3 / pip 就都有了。
+      - name: Setup Python (openEuler 系统解释器)
+        run: |
+          PY=""
+          for c in python3.13 python3.12 python3.11 python3.10 python3; do
+            if command -v "$c" >/dev/null 2>&1 &&
+               "$c" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)'; then
+              PY="$c"; break
+            fi
+          done
+          if [ -z "$PY" ]; then
+            echo "::error::需要 Python >= 3.10，但只找到 $("python3" --version 2>&1)。openEuler 22.03 自带 3.9，请先安装 python3.11+ 再重跑。"
+            exit 1
+          fi
+          echo "using $PY ($("$PY" --version 2>&1))"
+          "$PY" -m venv "$RUNNER_TEMP/ci-fix-venv"
+          echo "$RUNNER_TEMP/ci-fix-venv/bin" >> "$GITHUB_PATH"
+          python --version
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+        run: python -m pip install -r requirements.txt
 
       - name: Setup Claude Code account credentials
         if: env.AI_RUNNER == 'claude-code-account'
@@ -345,7 +381,7 @@ jobs:
 
   # ── 阶段 3: arm64 复验（确定性 docker build，无 AI）──────────────
   verify-arm:
-    runs-on: [self-hosted, ARM64]
+    runs-on: [self-hosted, Linux, ARM64]
     timeout-minutes: 120
     if: |
       github.event.action == 'run-ci-fix-phase' &&
@@ -399,15 +435,31 @@ jobs:
             git checkout FETCH_HEAD
           fi
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+      # 自托管 runner 是 openEuler：actions/setup-python 没有对应发行版的预编译包，
+      # 且系统里只有 python3、没有 python（后续步骤却全写 `python ...`）。
+      # 挑一个 >= 3.10 的解释器（ci_data.py 用了 PEP 604 的 `str | None`，无 future
+      # import，openEuler 22.03 自带的 3.9 在 import 阶段就会 TypeError），
+      # 建 venv 并把它的 bin 前置到 PATH，python / python3 / pip 就都有了。
+      - name: Setup Python (openEuler 系统解释器)
+        run: |
+          PY=""
+          for c in python3.13 python3.12 python3.11 python3.10 python3; do
+            if command -v "$c" >/dev/null 2>&1 &&
+               "$c" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)'; then
+              PY="$c"; break
+            fi
+          done
+          if [ -z "$PY" ]; then
+            echo "::error::需要 Python >= 3.10，但只找到 $("python3" --version 2>&1)。openEuler 22.03 自带 3.9，请先安装 python3.11+ 再重跑。"
+            exit 1
+          fi
+          echo "using $PY ($("$PY" --version 2>&1))"
+          "$PY" -m venv "$RUNNER_TEMP/ci-fix-venv"
+          echo "$RUNNER_TEMP/ci-fix-venv/bin" >> "$GITHUB_PATH"
+          python --version
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+        run: python -m pip install -r requirements.txt
 
       - name: Run arm64 复验
         run: python scripts/stages/build-fix.py

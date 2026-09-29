@@ -145,7 +145,8 @@ Fork `sunshuang1866/docker-images-workflow` 到你的 GitHub 账号，后续在 
 
 容器构建修复阶段（`build-fix` / `verify-arm`）运行在**自托管 runner** 上，需准备两台机器（arm64、amd64）：
 
-1. 各安装 GitHub self-hosted runner，打标签：arm64 → `self-hosted, ARM64`；amd64 → `self-hosted, AMD64`
+1. 各安装 GitHub self-hosted runner，**注册时的默认标签即可**：arm64 → `self-hosted, Linux, ARM64`；amd64 → `self-hosted, Linux, X64`。
+   ⚠️ x86_64 的自动架构标签是 **`X64`**，不是 `AMD64`——写成 `AMD64` 且没手动 `--labels AMD64` 的话，`build-fix-amd64` 会找不到 runner 一直挂到超时
 2. runner 用户加入 `docker` 组，能免 sudo 执行 `docker run` / `docker exec` / `docker build`
 3. 能访问网络拉取基础镜像（如 openEuler 官方镜像）
 
