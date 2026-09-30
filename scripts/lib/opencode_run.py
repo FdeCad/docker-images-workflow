@@ -6,9 +6,11 @@ opencode 调用统一封装 - Python 版本
 关键工程要点:
   1. 用 bash + 真实管道喂 prompt: cat $promptFile | opencode run - ...
   2. stdbuf -oL -eL: 强制行缓冲，workflow 日志实时可见
-  3. stdout/stderr 直通 workflow log
+  3. stdout/stderr 由读取线程实时转发到 workflow log 与 log file
+     （早期用 communicate() 会缓冲到进程退出，构建类任务几十分钟内日志全空）
   4. 进程组 SIGKILL: 确保子进程被清理
-  5. prompt 落盘支持 replay
+  5. 超时必须向上抛出: 绝不能被兜底 except 吞掉，否则调用方只看到「产物不存在」
+  6. prompt 落盘支持 replay
 """
 
 import os
@@ -17,6 +19,7 @@ import json
 import time
 import signal
 import subprocess
+from collections import deque
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict, Any
@@ -219,6 +222,9 @@ def run_opencode(
     
     # 超时处理
     timed_out = False
+    # 尾缓冲：异常信息只引用最近若干行，完整输出落在 log_file
+    TAIL_LINES = 200
+    tail = {'stdout': deque(maxlen=TAIL_LINES), 'stderr': deque(maxlen=TAIL_LINES)}
     
     def timeout_handler():
         nonlocal timed_out
@@ -235,40 +241,56 @@ def run_opencode(
                 pass
     
     # 使用 Timer 实现超时
-    from threading import Timer
+    from threading import Thread, Timer
     timer = Timer(timeout_ms / 1000, timeout_handler)
     timer.daemon = True
     timer.start()
+
+    # 实时转发 stdout/stderr。
+    # 原来用 process.communicate()：它要等进程退出才一次性返回全部输出，而构建类
+    # 任务动辄几十分钟，期间 workflow 日志一片空白，失败时也只打印末 20 行——
+    # 等于没有证据。改成读取线程边读边写 workflow log 与 log_file，另用 deque
+    # 保留尾部若干行供异常信息引用。
+    log_fh = open(log_file, 'a', encoding='utf-8', errors='replace')
+
+    def pump(stream, name: str) -> None:
+        try:
+            for raw in iter(stream.readline, b''):
+                line = raw.decode('utf-8', errors='replace').rstrip('\n')
+                tail[name].append(line)
+                log(f'  [{name}] {line}')
+                log_fh.write(f'[{name}] {line}\n')
+                log_fh.flush()
+        except Exception as e:  # 读取失败不应掩盖主流程
+            log(f'  [{name}] 读取中断: {e}')
+
+    threads = [
+        Thread(target=pump, args=(process.stdout, 'stdout'), daemon=True),
+        Thread(target=pump, args=(process.stderr, 'stderr'), daemon=True),
+    ]
+    for t in threads:
+        t.start()
     
     try:
-        # 等待进程完成，同时读取输出
-        stdout, stderr = process.communicate()
+        # 等进程退出；输出已由 pump 线程实时转发，这里只需收尾
+        process.wait()
+        for t in threads:
+            t.join(timeout=10)
         timer.cancel()
         
         duration = time.time() - t0
         
-        # 输出 opencode 的 stdout/stderr 到 workflow log
-        stderr_text = stderr.decode('utf-8', errors='replace').strip()
-        stdout_text = stdout.decode('utf-8', errors='replace').strip()
+        # 完整输出已实时写进 workflow log 与 log_file，这里只取尾缓冲供报错引用
+        stderr_text = '\n'.join(tail['stderr']).strip()
+        stdout_text = '\n'.join(tail['stdout']).strip()
         
-        if stderr_text:
-            for line in stderr_text.split('\n'):
-                log(f'  [stderr] {line}')
-        if stdout_text:
-            # 只输出最后几行避免刷屏
-            stdout_lines = stdout_text.split('\n')
-            if len(stdout_lines) > 20:
-                log(f'  [stdout] ... ({len(stdout_lines)} lines total, showing last 20)')
-                for line in stdout_lines[-20:]:
-                    log(f'  [stdout] {line}')
-            else:
-                for line in stdout_lines:
-                    log(f'  [stdout] {line}')
-        
+        # 输出不再在这里补打一遍：pump 线程已逐行实时转发，重复打印只会刷屏。
+
         if timed_out:
             raise TimeoutError(
                 f'opencode [{label}] TIMEOUT after {duration:.1f}s '
                 f'(limit {timeout_ms / 1000:.0f}s). '
+                f'完整输出见 {log_file}（上面末 {TAIL_LINES} 行）。'
                 f'replay: cd {work_dir} && cat {prompt_dump_file} | {opencode_bin} {" ".join(opencode_args)}'
             )
         
@@ -304,18 +326,20 @@ def run_opencode(
             'exit_code': process.returncode,
         }
         
-    except KeyboardInterrupt:
+    finally:
+        # 正常结束、超时、异常、Ctrl-C 都要停掉定时器并确保进程组已死。
+        # 这里必须是 finally 而不是 `except Exception`：原先的
+        # `except Exception as e: if not timed_out: raise` 条件写反了，
+        # 超时抛出的 TimeoutError 正好落进「timed_out 为真 → 不重抛」的分支，
+        # 被静默吞掉、函数隐式返回 None。调用方只看到「产物不存在」，
+        # 真实原因（超时）就此丢失——2026-09-30 的 build-fix 失败正是如此。
         timer.cancel()
-        log(f'  ⚠ [{label}] 被用户中断')
-        try:
-            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-        except:
-            pass
-        raise
-    except Exception as e:
-        timer.cancel()
-        if not timed_out:
-            raise
+        log_fh.close()
+        if process.poll() is None:
+            try:
+                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+            except Exception:
+                pass
 
 
 if __name__ == '__main__':
