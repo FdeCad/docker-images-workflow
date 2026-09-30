@@ -8,8 +8,10 @@
 """
 
 import importlib.util
+import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -181,3 +183,110 @@ def test_chain_id_is_carried_into_next_dispatch(harness):
 
     assert dispatched
     assert dispatched[0]['chain_id'] == '36677467180'
+
+
+def _touch_old(path, age: float = 10.0):
+    """把 mtime 拨到 age 秒前，绕过「文件太新则跳过」的保护。"""
+    t = time.time() - age
+    os.utime(path, (t, t))
+
+
+class TestIncrementalDerivedUpload:
+    """derived_file 一落盘就增量上传到 ci-fix-log 分支。
+
+    回归的是 2026-09-30 那次整机失联：agent 攻坚 2h19m 挖出三个真实阻塞点、
+    derived_file 已写到 2373 字节，但上传发生在 `run_agent` **返回之后**，
+    而 fixarm 在编译途中整机失去响应、job 被切断 —— 产物只剩在那台机器的本地
+    磁盘上，只能事后按逐字重建抢救回来。增量上传把最坏损失从「整轮攻坚」压到
+    「最后 20 秒」。
+    """
+
+    def _mod(self):
+        return _load_build_fix()
+
+    def test_uploads_once_when_file_appears(self, tmp_path):
+        mod = self._mod()
+        f = tmp_path / 'derived-dockerfile'
+        f.write_text('FROM openeuler/openeuler:24.03-lts-sp4\n', encoding='utf-8')
+        _touch_old(f)
+        sent, state = [], {}
+
+        assert mod._maybe_upload_derived(str(f), state, sent.append) is True
+        assert sent == ['FROM openeuler/openeuler:24.03-lts-sp4']  # 上传前 strip
+        assert state['size'] == f.stat().st_size
+
+    def test_does_not_re_upload_unchanged_content(self, tmp_path):
+        """没变化就不该重复 PUT——否则 3 小时的构建会打上百次 Contents API。"""
+        mod = self._mod()
+        f = tmp_path / 'derived-dockerfile'
+        f.write_text('FROM x\n', encoding='utf-8')
+        _touch_old(f)
+        sent, state = [], {}
+
+        assert mod._maybe_upload_derived(str(f), state, sent.append) is True
+        assert mod._maybe_upload_derived(str(f), state, sent.append) is False
+        assert len(sent) == 1
+
+    def test_uploads_again_after_the_agent_lands_a_new_version(self, tmp_path):
+        mod = self._mod()
+        f = tmp_path / 'derived-dockerfile'
+        sent, state = [], {}
+
+        f.write_text('RUN echo a\n', encoding='utf-8'); _touch_old(f)
+        mod._maybe_upload_derived(str(f), state, sent.append)
+
+        f.write_text('RUN echo a\nRUN echo b\n', encoding='utf-8'); _touch_old(f)
+        mod._maybe_upload_derived(str(f), state, sent.append)
+
+        assert len(sent) == 2
+        assert 'RUN echo b' in sent[1]
+
+    def test_skips_a_file_that_is_still_being_written(self, tmp_path):
+        """刚写过的文件先不传，避免抓半截内容（下一轮再传）。"""
+        mod = self._mod()
+        f = tmp_path / 'derived-dockerfile'
+        f.write_text('FROM x\n', encoding='utf-8')  # mtime = 现在
+        sent = []
+
+        assert mod._maybe_upload_derived(str(f), {}, sent.append) is False
+        assert sent == []
+
+    def test_missing_file_is_not_an_error(self, tmp_path):
+        """agent 还没开始写时不能炸——这个轮询在整轮构建里一直在跑。"""
+        mod = self._mod()
+        sent = []
+        assert mod._maybe_upload_derived(str(tmp_path / 'nope'), {}, sent.append) is False
+        assert sent == []
+
+
+def test_upload_happens_while_the_agent_is_still_running(harness, monkeypatch):
+    """集成：增量上传必须发生在 `run_agent` **返回之前**。
+
+    这正是 2026-09-30 丢工作的根因——上传挂在 run_agent 之后，机器一失联就全丢。
+    这里让假 agent 写完 derived_file 后继续睡 1 秒，断言上传事件排在它返回之前。
+    """
+    mod, _, _, env = harness
+    work = Path(mod.WORK_BASE) / '4723'
+    events = []
+
+    def slow_agent(**kwargs):
+        f = work / 'derived-dockerfile'
+        f.write_text('FROM openeuler/openeuler:24.03-lts-sp4\nRUN echo hi\n', encoding='utf-8')
+        _touch_old(f)          # 绕过「文件太新则跳过」的保护
+        time.sleep(1.0)        # 模拟 agent 还在继续攻坚
+        events.append('agent-returned')
+        return {'output_file': kwargs['output_file']}
+
+    monkeypatch.setattr(mod, 'run_agent', slow_agent)
+    monkeypatch.setattr(mod, 'DERIVED_UPLOAD_INTERVAL', 0.05)
+    monkeypatch.setattr(
+        mod.ci_data, 'write_file',
+        lambda path, content, msg, **kw: events.append(('upload', path)))
+
+    mod.build_mode(env(verify_count=0))
+
+    uploads = [i for i, e in enumerate(events)
+               if e != 'agent-returned' and str(e[1]).endswith('derived-dockerfile')]
+    assert uploads, f'run_agent 运行期间从未增量上传过 derived：{events}'
+    assert uploads[0] < events.index('agent-returned'), \
+        '增量上传发生在 agent 返回之后 —— 那样整机失联仍会丢工作'

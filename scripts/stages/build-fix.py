@@ -16,6 +16,8 @@ verify 模式：
 import os
 import sys
 import subprocess
+import threading
+import time
 from pathlib import Path
 
 PROJECT_ROOT = str(Path(__file__).resolve().parent.parent.parent)
@@ -34,6 +36,71 @@ SOURCE_REPO_DIR = os.path.join(PROJECT_ROOT, 'source-repo')
 
 # arm 复验失败后的最大回修轮数（amd64 → verify → amd64 → verify → 放弃）
 MAX_VERIFY_ROUNDS = 2
+
+# 增量上传 derived Dockerfile 的轮询间隔（秒）
+DERIVED_UPLOAD_INTERVAL = 20.0
+
+
+def _maybe_upload_derived(derived_file: str, state: dict, upload, settle: float = 1.0) -> bool:
+    """检查一次 derived_file 是否变了，变了就上传。返回是否真的上传了。
+
+    抽成单次函数是为了可测——把轮询线程隔在外面，测试里直接调它，不必和线程赛跑。
+    """
+    try:
+        st = os.stat(derived_file)
+    except OSError:
+        return False
+    if (st.st_mtime, st.st_size) == (state.get('mtime'), state.get('size')):
+        return False
+    # 文件可能正在写：太新就等下一轮，避免上传半截内容。
+    # 半截产物并不可怕（verify-arm 的从零构建才是权威判据），但没必要。
+    if time.time() - st.st_mtime < settle:
+        return False
+    try:
+        with open(derived_file, 'r', encoding='utf-8') as f:
+            content = f.read().strip()
+    except OSError:
+        return False
+    if not content:
+        return False
+    upload(content)
+    state['mtime'], state['size'] = st.st_mtime, st.st_size
+    return True
+
+
+def _watch_derived_uploads(derived_file: str, upload, interval: float = None):
+    """后台线程：agent 跑的过程中 derived_file 一变就上传，直到 stop.set()。
+
+    **Why:** 落盘契约原本只在 `run_agent` 返回之后才 PUT 到 ci-fix-log 分支，
+    于是它只防得住「AI 超时」，**防不住「机器/job 被切断」**。2026-09-30 实测：
+    agent 攻坚 2h19m 挖出三个真实阻塞点（install_deps.sh 拒绝 openEuler、
+    3rdparty_build.sh 的 LD_LIBRARY_PATH、knowhere 缺 libaio-devel），derived_file
+    已写到 2373 字节，但 fixarm 在编译途中整机失去响应、job 在 run_agent 返回前
+    被切断——产物只存在于那台机器的本地磁盘上，2 小时白干，只能靠我事后按
+    逐字重建抢救。增量上传把最坏损失从「整轮攻坚」压到「最后 interval 秒」。
+
+    上传失败只记日志、绝不中断本轮：瞬时 5xx 不该让阶段失败（ci_data 内部已有
+    重试），且 run_agent 返回之后还有一次权威上传兜底。
+    """
+    # 运行时读取而非写成默认参数：默认参数在函数定义时就绑定了，测试里改不动
+    if interval is None:
+        interval = DERIVED_UPLOAD_INTERVAL
+    stop = threading.Event()
+    state: dict = {}
+
+    def loop():
+        while not stop.wait(interval):
+            try:
+                if _maybe_upload_derived(derived_file, state, upload):
+                    log_stage('build-fix', '⬆️ derived Dockerfile 增量上传成功')
+            except Exception as e:
+                log_stage('build-fix', f'⚠️ 增量上传异常（忽略，不影响本轮）: {e}')
+
+    thread = threading.Thread(target=loop, daemon=True, name='derived-uploader')
+    thread.start()
+    # 把 state 交出去，收尾时可以复用同一份「已上传到哪个版本」的记录，
+    # 避免重复上传同一份内容
+    return stop, thread, state
 
 
 def parse_env() -> dict:
@@ -223,6 +290,15 @@ def build_mode(env: dict):
             '且不得破坏 arm64 构建——所有架构中立的问题（如发行版判定）必须在这一并解决。'
         )
 
+    # agent 一落盘就增量上传：机器的命比 agent 的预算更不可控，而产物只在本地磁盘
+    # 上的话，整机失联就等于整轮攻坚白干（2026-09-30 实测过一次）。
+    stop_uploads, uploader, upload_state = _watch_derived_uploads(
+        derived_file,
+        lambda content: ci_data.write_file(
+            ci_data.derived_dockerfile_path(pr), content,
+            f"build-fix: {env['source_repo']} PR #{pr} arch={arch}（增量落盘）"),
+    )
+
     agent_error = None
     try:
         run_agent(
@@ -243,6 +319,17 @@ def build_mode(env: dict):
         agent_error = e
         log_stage('build-fix', f'⚠️ AI agent 异常: {type(e).__name__}: {e}')
     finally:
+        # 停止增量上传，并把最后一次改动也带上（agent 可能刚写完就退出了）
+        stop_uploads.set()
+        uploader.join(timeout=5)
+        try:
+            _maybe_upload_derived(derived_file, upload_state,
+                                  lambda content: ci_data.write_file(
+                                      ci_data.derived_dockerfile_path(pr), content,
+                                      f"build-fix: {env['source_repo']} PR #{pr} arch={arch}（收尾）"),
+                                  settle=0)
+        except Exception as e:
+            log_stage('build-fix', f'⚠️ 收尾上传失败（不影响本轮）: {e}')
         # 无论成败都清理容器，避免在自托管 runner 上残留
         build_runner.docker_rm(container)
 
