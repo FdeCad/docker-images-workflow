@@ -59,7 +59,7 @@ RUN mkdir -p /usr/lib64/cmake/gRPC \
         > /usr/lib64/cmake/gRPC/gRPCConfig.cmake
 
 RUN python3 -m pip install --upgrade pip \
-    && python3 -m pip install cython prettytable
+    && python3 -m pip install cython prettytable wheel
 
 WORKDIR /opt
 
