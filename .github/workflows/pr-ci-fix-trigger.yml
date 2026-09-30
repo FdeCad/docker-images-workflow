@@ -409,7 +409,11 @@ jobs:
   # ── 阶段 3: arm64 复验（确定性 docker build，无 AI）──────────────
   verify-arm:
     runs-on: [self-hosted, Linux, ARM64]
-    timeout-minutes: 120
+    # 这是唯一一次权威的「从零 docker build」，且无 AI 可退让，因此它才是重型镜像
+    # （如 milvus：源码编译 conan 依赖 + C++ 核心）的真实瓶颈。120 分钟对小时级
+    # 冷构建必然不够——那种情况下 job 会被砍在构建中途，而 derived Dockerfile 本身
+    # 没问题，属于「预算不足」而非「修复失败」，白白浪费前面的 AI 攻坚。
+    timeout-minutes: 300
     if: |
       github.event.action == 'run-ci-fix-phase' &&
       github.event.client_payload.phase == 'verify-arm'
