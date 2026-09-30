@@ -25,6 +25,9 @@ RUN dnf update -y \
         grpc grpc-devel grpc-plugins jq \
     && dnf clean all
 
+RUN echo "nodeenv==1.9.1" > /opt/pip-constraints.txt
+ENV PIP_CONSTRAINT=/opt/pip-constraints.txt
+
 RUN python3 -m pip install --upgrade pip \
     && python3 -m pip install cython prettytable
 
