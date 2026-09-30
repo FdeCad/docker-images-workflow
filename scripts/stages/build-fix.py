@@ -186,6 +186,7 @@ def build_mode(env: dict):
             '（如 if [ "$(uname -m)" = "x86_64" ]），不得破坏 arm64 构建。'
         )
 
+    agent_error = None
     try:
         run_agent(
             prompt_file=agent_prompt_file('dockerfile-builder'),
@@ -196,12 +197,26 @@ def build_mode(env: dict):
             label=f'build-fix-{arch}',
             conventions_file=get_conventions_file(),
         )
+    except Exception as e:
+        # AI 超时/崩溃不等于本次一无所获：builder agent 被要求「每有进展就写一次
+        # derived_file」，所以异常之后仍可能有可用产物。判据是产物本身，不是 agent
+        # 的退出码——有产物就继续往下走，没有才把原始异常抛出去。
+        # 放行是安全的：verify-arm 阶段会用无 AI 的确定性 docker build 做权威把关，
+        # 未经验证的 Dockerfile 不可能凭这一步进到 PR。
+        agent_error = e
+        log_stage('build-fix', f'⚠️ AI agent 异常: {type(e).__name__}: {e}')
     finally:
         # 无论成败都清理容器，避免在自托管 runner 上残留
         build_runner.docker_rm(container)
 
     if not os.path.exists(derived_file):
+        if agent_error is not None:
+            raise agent_error
         raise RuntimeError(f'derived Dockerfile not produced: {derived_file}')
+    if agent_error is not None:
+        log_stage('build-fix',
+                  '⚠️ AI agent 未正常结束，但 derived Dockerfile 已落盘，继续交付；'
+                  '从零构建的权威验证交给 verify-arm 阶段')
 
     with open(derived_file, 'r', encoding='utf-8') as f:
         derived = f.read().strip()
@@ -212,8 +227,13 @@ def build_mode(env: dict):
                        f"build-fix: {env['source_repo']} PR #{pr} arch={arch}")
     ci_data.write_file(ci_data.dockerfile_target_path(pr), target,
                        f"build-fix: dockerfile target PR #{pr}")
-    with open(output_file, 'r', encoding='utf-8') as f:
-        build_log = f.read()
+    if os.path.exists(output_file):
+        with open(output_file, 'r', encoding='utf-8') as f:
+            build_log = f.read()
+    else:
+        # agent 在写日志前就中断了：不要因为缺日志而丢掉已经落盘的 Dockerfile
+        build_log = '(AI agent 未产出构建日志——在写入前中断)'
+        log_stage('build-fix', f'⚠️ 缺少构建日志 {output_file}，以占位内容继续')
     ci_data.write_file(ci_data.build_log_path(pr, arch), build_log,
                        f"build-fix: build log PR #{pr} arch={arch}")
     log_stage('build-fix', '✅ derived Dockerfile + build log written to ci-fix-log')
