@@ -88,11 +88,14 @@ verify-arm 若失败：回 `build-fix (amd64)` 再修（`verify_count` 递增，
 1. `docker pull <base_image>` → `docker run -d --name <container> <base_image> sleep infinity`
 2. 按顺序重放 Dockerfile 指令：`RUN` → `docker exec`；`ENV`/`WORKDIR` → 同步容器环境；`COPY`/`ADD` → `docker cp`（若失败点不在此则保持原样）
 3. 失败 → 读错误 → 跑修复命令 → 重跑原命令直到成功，记录「原命令 + 修复命令」
-4. 跑通后把失败的 `RUN` 替换为「修复后实际跑通的等价命令」，其余行原样保留 → 写出最终 Dockerfile（最小 diff）
-5. `docker build -f <dockerfile_path> .` 从零验证；build 失败说明反推有偏差（WORKDIR 顺序、环境变量丢失等），修正反推后重 build，直到成功
-6. 写 `derived_file`（最终 Dockerfile 纯文本）和 `output_file`（构建日志）
+4. 每有一处修复在容器里验证生效，**立刻**把当前进度写进 `derived_file`（增量落盘）
+5. 跑通后把失败的 `RUN` 替换为「修复后实际跑通的等价命令」，其余行原样保留 → 写出最终 Dockerfile（最小 diff）
+6. 尽力做一次 `docker build -f <dockerfile_path> .` 自检；预算不够可停在已落盘版本，在日志里如实写明
+7. 写 `output_file`（构建日志）
 
-关键点：**容器会话是快速迭代的草稿区，`docker build` 从零构建才是「真的能用」的裁判。**
+关键点：**容器会话是快速迭代的草稿区，`docker build` 的权威裁定在 `verify-arm` 阶段**（无 AI、确定性、预算 120 分钟）。builder agent 自己的 `docker build` 只是自检，**不是交付前提**——对 milvus 这类需要数小时源码编译的镜像，要求它在 AI 预算内跑完一次从零构建是不现实的。
+
+同理，增量落盘是硬要求：agent 攒到最后才写的做法，会让一个已经完全正确的修复在超时后整个蒸发（2026-09-30 的 minio 修复即如此）。
 
 ---
 
@@ -114,8 +117,12 @@ verify-arm 若失败：回 `build-fix (amd64)` 再修（`verify_count` 递增，
 
 ## 六、失败与重试边界
 
-- **arm64 build-fix 失败**（无法收敛）→ job 失败，`derived-dockerfile` 未产出，链终止，日志可查。
+- **arm64 build-fix 失败**，分两种：
+  - AI 跑完但**没产出** `derived-dockerfile` → job 失败，链终止，日志可查。
+  - AI 超时/异常**但已落盘** `derived-dockerfile` → **不终止**，照常 dispatch 下一阶段，由 `verify-arm` 的确定性 `docker build` 裁决。判据是产物本身，不是 agent 的退出码；未通过 verify-arm 的 Dockerfile 不可能进到 PR，所以放行是安全的。
 - **amd64 build-fix 失败** → 同上。
+
+> `AI_TIMEOUT_MS`（默认 30 分钟）因此不再是硬失败点，而只是「AI 还能继续攻坚多久」的预算。超出后已有的增量产物仍会被采纳并送入 verify-arm。需要给重型镜像更多攻坚时间时，在仓库 Variables 里调大 `AI_TIMEOUT_MS` 即可，无需改代码——但要注意它必须小于 build-fix job 的 `timeout-minutes: 240`。
 - **verify-arm 失败**（amd64 修复破坏了 arm）→ 回 amd64 再修（`verify_count` 递增，最多 2 轮）；仍失败 → 评论 PR 通知人工。
 - **code-fix 拒绝提交**：当 `derived-dockerfile` 目标路径不在原始 PR 文件列表内时直接报错，绝不越界提交。
 

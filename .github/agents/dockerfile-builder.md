@@ -8,7 +8,8 @@
 
 - **最小化 diff**：最终 Dockerfile 必须基于原始 Dockerfile 只改失败相关的指令，其余结构、`COPY`/`ENV`/`ARG`/`WORKDIR`/注释一律原样保留。禁止重排、格式化、删注释或无关改动。
 - **每条结论都要在容器里验证**：不要凭日志猜修复；每改一处，都要在容器里实际执行确认生效。
-- **`docker build` 是最终裁判**：反推出的 Dockerfile 必须能用 `docker build -f <dockerfile_path> .` 从零构建成功，才允许交付。
+- **先落盘，再验证** ⚠️：容器里一旦跑通一条完整路径，**立刻**把当前版本写进 `derived_file`，然后再继续攻坚或做 `docker build`。**绝不要攒到最后才写**——上一轮的教训是：一个已经完全正确的 minio 修复，只因为后面还有问题没解决而一个字都没落盘，超时后全部蒸发。
+- **`docker build` 是加分项，不是交付前提**：反推的 Dockerfile 应尽量用 `docker build -f <dockerfile_path> .` 从零自检。但本链路后面还有独立的 `verify-arm` 阶段会在 arm64 上做一次权威的、无 AI 的确定性 `docker build`（预算 120 分钟），那才是最终裁判。所以：**预算不够时不要死磕 `docker build`**，把已有成果落盘并在日志里写清「未完成从零自检」即可。
 - **amd64 修复不得破坏 arm64**：当 `arch=amd64` 时，你面对的是 arm 已构建通过的 Dockerfile，只能做**架构中立**或**架构守卫**（如 `if [ "$(uname -m)" = "x86_64" ]; then ... fi`）的修复。
 - **记录完整命令序列**：每一条成功执行的关键命令（含修复命令）都要写进构建日志，这是反推 Dockerfile 的依据，也是审计凭据。
 - **只允许修改 `dockerfile_path` 指定的 Dockerfile**，不得改动仓库中任何其他文件。
@@ -37,13 +38,14 @@
    - `RUN cmd` → `docker exec -w <workdir> <container> sh -c 'cmd'`
    - `COPY/ADD` → 若失败点不在此，保持原样即可；若涉及，用 `docker cp` 把构建上下文的源文件复制进容器对应路径
 4. **失败即修**：某条命令失败时，读错误输出 → 定位根因 → 在容器里执行修复命令（装依赖、改 URL、调参数等）→ 重跑原命令直到成功。把「原命令 + 修复命令」都记入日志。
-5. **反推 Dockerfile**：跑通后，把原始 Dockerfile 中失败的那几条 `RUN` 替换为「修复后实际跑通的等价命令」（修复命令折叠进对应的 `RUN`），其余行保持原样，写出最终 Dockerfile 到 `derived_file`。
-6. **docker build 验证**：`docker build -f <dockerfile_path> .`（构建上下文用仓库根目录或 Dockerfile 所在目录，以能成功为准）。若 build 失败，说明反推有偏差（如 WORKDIR 顺序、环境变量丢失），修正反推后重 build，直到成功。
-7. **写日志**：把构建命令序列、每处修复及原因写入 `output_file`。
+5. **反推 Dockerfile 并立即落盘**：每当一处修复在容器里验证生效，就把原始 Dockerfile 中对应的 `RUN` 替换为「修复后实际跑通的等价命令」（修复命令折叠进该 `RUN`），其余行保持原样，**写一次 `derived_file`**。不要等全部跑通——每次有进展就覆盖写一遍，保证任何时刻中断都留有可用产物。
+6. **docker build 自检（尽力而为）**：`docker build -f <dockerfile_path> .`（构建上下文用仓库根目录或 Dockerfile 所在目录，以能成功为准）。build 失败通常说明反推有偏差（WORKDIR 顺序、环境变量丢失等），修正后重试。**但这是加分项**：若判断剩余预算不足以跑完一次从零构建（如依赖需要长时间源码编译），就停在已落盘的最佳版本，转第 7 步。
+7. **写日志**：把构建命令序列、每处修复及原因写入 `output_file`，并如实写明 `docker build` 自检是否完成。
 
 ## 失败处理
 
-- 若在预算内无法让 `docker build` 成功，在 `output_file` 里如实写清「卡在哪一步、缺什么证据」，不要伪造成功。
+- 若在预算内无法让整个构建跑通，把**已经跑通的修复**落盘到 `derived_file`，并在 `output_file` 里如实写清「卡在哪一步、缺什么证据」，不要伪造成功。半成品落盘远好过空手而归。
+- 若预算即将耗尽（或多条命令长时间无输出），优先做一件事：写 `derived_file`。
 - 若 `ci_analysis` 指向 `infra-error`（网络/基础设施，与 Dockerfile 无关），在容器里复现后确认即可在日志里说明，不强改代码。
 
 ## 输出格式（output_file，markdown）
@@ -68,5 +70,5 @@
 
 - `derived_file` 写的是**完整 Dockerfile 内容**，不含任何 markdown 围栏；`output_file` 才用 markdown。
 - 两个输出文件路径都是绝对路径、不在源码仓库内，直接用 Write 工具写入即可。
-- 先跑通、验证 `docker build` 成功，再写两个输出文件，不要提前写。
+- **每有进展就写一次 `derived_file`**，不要攒到最后；`output_file` 可在收尾时写。
 - 结束后清理容器（`docker rm -f <container>`）；即使中途出错也尽量清理。
