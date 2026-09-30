@@ -14,6 +14,7 @@ from unittest.mock import patch, MagicMock
 from scripts.lib.ci_gitcode_api import (
     _url_score,
     _find_jenkins_url_in_comments,
+    get_pr_detail,
     get_latest_failed_run,
     _fetch_external_ci_log,
     find_open_ci_successful_fix_pr,
@@ -434,3 +435,56 @@ class TestGetLatestFailedRun:
              patch('scripts.lib.ci_gitcode_api._get_pr_comments',     return_value=[]):
             result = get_latest_failed_run(REPO, SHA, TOKEN, pr_number=0)
         assert result['target_url'] == X86
+
+
+# ── get_pr_detail：无 head.sha 时用列表端点兜底 ────────────────────────────────
+
+class TestGetPrDetailFallback:
+    """`/pulls/{id}` 返回 200 却不含 `head.sha` 时，要改用列表端点兜底。
+
+    2026-09-30 实测：该端点 06:15 连续 5 次返回 200 但无 `head`（03:39 同参数
+    成功），而列表端点 `/pulls?state=open` 一直带着 `head.sha`——watch 侧用的就是
+    它。缺这个字段不是"少个字段"，而是 manual-trigger 直接 RuntimeError、
+    整条链路根本起不来。
+    """
+
+    @staticmethod
+    def _resp(status, payload):
+        r = MagicMock()
+        r.status_code = status
+        r.ok = status < 400
+        r.json.return_value = payload
+        return r
+
+    def test_detail_with_head_is_used_directly(self):
+        detail = {'number': 4723, 'title': 't', 'head': {'sha': 'abc12345'},
+                  'base': {'ref': 'master'}}
+        with patch('scripts.lib.ci_gitcode_api.requests.get',
+                   return_value=self._resp(200, detail)) as g:
+            assert get_pr_detail(REPO, 4723, TOKEN) == detail
+        # 正常路径不该多打列表端点（watch 每轮都会调这里）
+        assert g.call_count == 1
+
+    def test_falls_back_to_list_when_head_missing(self):
+        list_entry = {'number': 4723, 'title': 't',
+                      'head': {'sha': 'd2831da2beef', 'ref': 'fix/4723'},
+                      'base': {'ref': 'master'}}
+        responses = [
+            self._resp(200, {'number': 4723}),   # /pulls/4723 —— 残缺形态
+            self._resp(200, [list_entry]),       # /pulls?state=open —— 兜底命中
+        ]
+        with patch('scripts.lib.ci_gitcode_api.requests.get', side_effect=responses):
+            got = get_pr_detail(REPO, 4723, TOKEN)
+        assert got['head']['sha'] == 'd2831da2beef'
+        assert got['base']['ref'] == 'master'
+
+    def test_returns_original_payload_when_fallback_also_fails(self):
+        """兜底也捞不到时返回残缺响应本身，让上层报错带上真实字段名。"""
+        responses = [
+            self._resp(200, {'message': 'ok'}),  # 残缺
+            self._resp(200, []),                 # open 里没有
+            self._resp(404, []),                 # closed 拉不动
+            self._resp(200, []),                 # merged 里也没有
+        ]
+        with patch('scripts.lib.ci_gitcode_api.requests.get', side_effect=responses):
+            assert get_pr_detail(REPO, 4723, TOKEN) == {'message': 'ok'}

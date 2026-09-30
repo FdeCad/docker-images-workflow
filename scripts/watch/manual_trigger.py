@@ -58,7 +58,11 @@ def main():
     base_ref = (pr.get('base') or {}).get('ref', 'main')
 
     if not head_sha:
-        raise RuntimeError(f"PR #{env['pr_number']} has no head.sha — 无法继续")
+        # 报错要能自证：把实际拿到的字段名带上，否则下次只能靠猜
+        # （`get_pr_detail` 有列表端点兜底，走到这里说明兜底也没捞到）。
+        raise RuntimeError(
+            f"PR #{env['pr_number']} has no head.sha — 无法继续"
+            f"（拿到 keys={list(pr)[:10]}）")
 
     dispatch_phase({
         'phase': 'ci-log-analysis',

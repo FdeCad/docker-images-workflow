@@ -144,15 +144,50 @@ def get_pr_file_names(repo: str, pr_number: int, token: str) -> List[str]:
             if f.get('filename') or f.get('new_path')]
 
 
+def _find_pr_by_number(owner: str, name: str, pr_number: int, token: str) -> Optional[Dict]:
+    """在列表端点里按编号找 PR（get_pr_detail 的兜底）。"""
+    url = f"{GITCODE_BASE}/api/v5/repos/{owner}/{name}/pulls"
+    for state in ('open', 'closed', 'merged'):
+        resp = requests.get(url, params={'state': state, 'per_page': 100,
+                                         'access_token': token}, timeout=30)
+        if not resp.ok:
+            continue
+        prs = resp.json()
+        if not isinstance(prs, list):
+            continue
+        for pr in prs:
+            if pr.get('number') == pr_number:
+                return pr
+    return None
+
+
 def get_pr_detail(repo: str, pr_number: int, token: str) -> Optional[Dict]:
-    """按编号获取 PR 详情（含 head.sha / title / base.ref）。不存在返回 None。"""
+    """按编号获取 PR 详情（含 head.sha / title / base.ref）。不存在返回 None。
+
+    2026-09-30 实测：这个端点在 CI runner 上会偶发返回 **HTTP 200 但不含 `head`**
+    （06:15 连续 5 次，而 03:39 同参数成功），同一时刻列表端点 `/pulls?state=open`
+    却一直带着 `head.sha`——watch 侧用的就是它。缺 `head.sha` 的后果不是"少个
+    字段"，而是 `manual-trigger` 直接 RuntimeError、整条链路根本起不来，所以这里
+    先记下残缺响应的形状（下次再犯能直接定位），再用列表端点兜底。
+    """
     owner, name, _ = parse_repo(repo)
     url = f"{GITCODE_BASE}/api/v5/repos/{owner}/{name}/pulls/{pr_number}"
     resp = requests.get(url, params={'access_token': token}, timeout=30)
     if resp.status_code == 404:
         return None
     resp.raise_for_status()
-    return resp.json()
+    data = resp.json()
+    if isinstance(data, dict) and (data.get('head') or {}).get('sha'):
+        return data
+
+    keys = list(data)[:10] if isinstance(data, dict) else type(data).__name__
+    print(f"[ci-log] ⚠️ /pulls/{pr_number} 返回 {resp.status_code} 但无 head.sha"
+          f"（keys={keys}）→ 改用列表端点兜底", flush=True)
+    fallback = _find_pr_by_number(owner, name, pr_number, token)
+    if fallback and (fallback.get('head') or {}).get('sha'):
+        print(f"[ci-log] ✅ 列表端点兜底成功 (sha={fallback['head']['sha'][:8]})", flush=True)
+        return fallback
+    return data if isinstance(data, dict) else None
 
 
 def get_branch_commit_count(repo: str, branch: str, base_branch: str, token: str) -> int:
