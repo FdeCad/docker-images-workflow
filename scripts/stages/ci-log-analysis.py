@@ -47,6 +47,8 @@ def parse_env() -> dict:
         'pr_base_branch': os.getenv('PR_BASE_BRANCH', 'main'),
         # 重试时为 fix PR 编号（CI 评论在 fix PR 上），首次为 0（评论在原始 PR 上）
         'fix_pr_number': int(os.getenv('FIX_PR_NUMBER', '0')),
+        # 链路标识，由链路起点 run 决定；空串表示本 run 就是起点（dispatch_phase 填）
+        'chain_id': os.getenv('CHAIN_ID', ''),
         'token': token,
         'dispatch_token': os.getenv('GITHUB_TOKEN', ''),
     }
@@ -64,6 +66,8 @@ def dispatch_build_fix(env: dict):
         'pr_head_sha': env['head_sha'],
         'fix_branch': env['fix_branch'],
         'pr_base_branch': env['pr_base_branch'],
+        # 原样透传链路标识
+        'chain_id': env['chain_id'],
     })
 
 

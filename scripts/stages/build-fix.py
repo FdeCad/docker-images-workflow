@@ -59,6 +59,8 @@ def parse_env() -> dict:
         'arch': os.getenv('ARCH', 'arm64'),
         'mode': os.getenv('MODE', 'build'),
         'verify_count': int(os.getenv('VERIFY_COUNT', '0')),
+        # 链路标识，由链路起点 run 决定；空串表示本 run 就是起点（dispatch_phase 填）
+        'chain_id': os.getenv('CHAIN_ID', ''),
         'token': token,
     }
 
@@ -121,6 +123,8 @@ def _base_payload(env: dict) -> dict:
         'pr_head_sha': env['pr_head_sha'],
         'fix_branch': env['fix_branch'],
         'pr_base_branch': env['pr_base_branch'],
+        # 必须原样透传，否则下一次 dispatch 会被当成新链路起点
+        'chain_id': env['chain_id'],
     }
 
 

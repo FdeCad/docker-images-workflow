@@ -1,5 +1,11 @@
 name: "ci-fix-team: PR CI 修复链路"
 
+# 一次修复会散成多条 run（链里有环，只能跑完再 dispatch），而 repository_dispatch
+# 不建立 run 之间的父子关系，Actions 列表里它们看上去互不相干。把 PR 号、阶段名和
+# chain_id 写进标题，就能一眼认出同一条链；chain_id 就是链路起点那个 run 的 id，
+# 可直接跳回起点。起点 run 自己还没有 chain_id，故回退成它自己的 run_id。
+run-name: "ci-fix PR#${{ github.event.client_payload.pr_number || github.event.inputs.pr_number || '?' }} · ${{ github.event.client_payload.phase || 'manual-trigger' }} · chain ${{ github.event.client_payload.chain_id || github.run_id }}"
+
 on:
   workflow_dispatch:
     inputs:
@@ -94,6 +100,7 @@ jobs:
       PR_BASE_BRANCH: ${{ github.event.client_payload.pr_base_branch }}
       # 重试时为 fix PR 编号，首次为 0；ci-log-analysis 用它从 fix PR 评论中查最新 build URL
       FIX_PR_NUMBER: ${{ github.event.client_payload.fix_pr_number || '0' }}
+      CHAIN_ID: ${{ github.event.client_payload.chain_id || '' }}
       GITHUB_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
       DISPATCH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
       GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN || '' }}
@@ -185,6 +192,7 @@ jobs:
       ARCH: arm64
       MODE: build
       VERIFY_COUNT: ${{ github.event.client_payload.verify_count || '0' }}
+      CHAIN_ID: ${{ github.event.client_payload.chain_id || '' }}
       GITHUB_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
       DISPATCH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
       GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN || '' }}
@@ -307,6 +315,7 @@ jobs:
       ARCH: amd64
       MODE: build
       VERIFY_COUNT: ${{ github.event.client_payload.verify_count || '0' }}
+      CHAIN_ID: ${{ github.event.client_payload.chain_id || '' }}
       GITHUB_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
       DISPATCH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
       GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN || '' }}
@@ -432,6 +441,7 @@ jobs:
       ARCH: arm64
       MODE: verify
       VERIFY_COUNT: ${{ github.event.client_payload.verify_count || '0' }}
+      CHAIN_ID: ${{ github.event.client_payload.chain_id || '' }}
       GITHUB_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
       DISPATCH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
       GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN || '' }}

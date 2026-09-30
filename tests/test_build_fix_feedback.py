@@ -101,6 +101,7 @@ def harness(tmp_path, monkeypatch):
             'arch': 'amd64',
             'mode': 'build',
             'verify_count': verify_count,
+            'chain_id': '36677467180',
             'token': 'x',
         }
 
@@ -167,3 +168,16 @@ def test_verify_exhaustion_comments_when_explicitly_enabled(harness, monkeypatch
 
     assert len(commented) == 1
     assert commented[0][0] == 'openeuler/openeuler-docker-images'
+
+
+def test_chain_id_is_carried_into_next_dispatch(harness):
+    """回修轮次 dispatch 下一个阶段时必须带上原 chain_id。
+
+    带丢不会有任何报错——`dispatch_phase` 会把空值填成**当前 run 的 id**，
+    于是一条链在 Actions 列表里静默断成两条。这种故障只能靠测试拦住。
+    """
+    mod, _, dispatched, env = harness
+    mod.build_mode(env(verify_count=1))
+
+    assert dispatched
+    assert dispatched[0]['chain_id'] == '36677467180'

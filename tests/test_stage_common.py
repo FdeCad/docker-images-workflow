@@ -2,10 +2,11 @@
 
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from scripts.lib.stage_common import normalize_repo
+from scripts.lib.stage_common import dispatch_phase, normalize_repo
 
 
 def test_plain_owner_repo_unchanged():
@@ -42,3 +43,36 @@ def test_empty_and_none_return_empty():
 
 def test_deep_path_keeps_last_two_segments():
     assert normalize_repo('https://gitcode.com/group/sub/o/r') == 'o/r'
+
+
+# ── dispatch_phase：链路标识 chain_id ─────────────────────────────────────────
+
+def _capture_dispatch(monkeypatch, run_id: str) -> dict:
+    """把 requests.post 换成捕获器，返回收到的 dispatch 请求体。"""
+    import scripts.lib.stage_common as sc
+
+    monkeypatch.setenv('GITHUB_RUN_ID', run_id)
+    seen: dict = {}
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        seen.update(json or {})
+        resp = MagicMock()
+        resp.status_code = 204
+        return resp
+
+    monkeypatch.setattr(sc.requests, 'post', fake_post)
+    return seen
+
+
+def test_chain_origin_fills_chain_id_from_its_own_run_id(monkeypatch):
+    """链路起点（payload 里还没有 chain_id）用本 run 的 id 当链路标识。"""
+    seen = _capture_dispatch(monkeypatch, '36677467180')
+    dispatch_phase({'phase': 'ci-log-analysis'})
+    assert seen['client_payload']['chain_id'] == '36677467180'
+
+
+def test_existing_chain_id_is_passed_through_not_replaced(monkeypatch):
+    """后续阶段必须沿用起点的 chain_id；被本 run id 顶替就等于另起一条链。"""
+    seen = _capture_dispatch(monkeypatch, '99999999999')
+    dispatch_phase({'phase': 'verify-arm', 'chain_id': '36677467180'})
+    assert seen['client_payload']['chain_id'] == '36677467180'
