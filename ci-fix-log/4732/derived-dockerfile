@@ -28,6 +28,36 @@ RUN dnf update -y \
 RUN echo "nodeenv==1.9.1" > /opt/pip-constraints.txt
 ENV PIP_CONSTRAINT=/opt/pip-constraints.txt
 
+RUN mkdir -p /usr/lib64/cmake/gRPC \
+    && printf '%s\n' \
+        'set(gRPC_FOUND TRUE)' \
+        'set(gRPC_VERSION "1.60.0")' \
+        'if(NOT TARGET gRPC::grpc_cpp_plugin)' \
+        '  add_executable(gRPC::grpc_cpp_plugin IMPORTED)' \
+        '  set_target_properties(gRPC::grpc_cpp_plugin PROPERTIES IMPORTED_LOCATION "/usr/bin/grpc_cpp_plugin")' \
+        'endif()' \
+        'if(NOT TARGET gRPC::grpc++_reflection)' \
+        '  add_library(gRPC::grpc++_reflection SHARED IMPORTED)' \
+        '  set_target_properties(gRPC::grpc++_reflection PROPERTIES IMPORTED_LOCATION "/usr/lib64/libgrpc++_reflection.so")' \
+        'endif()' \
+        'if(NOT TARGET gRPC::grpc++)' \
+        '  find_package(PkgConfig QUIET)' \
+        '  if(PkgConfig_FOUND)' \
+        '    pkg_check_modules(_grpcpp IMPORTED_TARGET grpc++)' \
+        '  endif()' \
+        '  if(TARGET PkgConfig::_grpcpp)' \
+        '    add_library(gRPC::grpc++ INTERFACE IMPORTED)' \
+        '    set_property(TARGET gRPC::grpc++ PROPERTY INTERFACE_LINK_LIBRARIES PkgConfig::_grpcpp)' \
+        '    if(TARGET protobuf::libprotobuf)' \
+        '      set_property(TARGET gRPC::grpc++ APPEND PROPERTY INTERFACE_LINK_LIBRARIES protobuf::libprotobuf)' \
+        '    endif()' \
+        '  else()' \
+        '    add_library(gRPC::grpc++ SHARED IMPORTED)' \
+        '    set_target_properties(gRPC::grpc++ PROPERTIES IMPORTED_LOCATION "/usr/lib64/libgrpc++.so" INTERFACE_INCLUDE_DIRECTORIES "/usr/include" INTERFACE_LINK_LIBRARIES "/usr/lib64/libgrpc.so;/usr/lib64/libgpr.so")' \
+        '  endif()' \
+        'endif()' \
+        > /usr/lib64/cmake/gRPC/gRPCConfig.cmake
+
 RUN python3 -m pip install --upgrade pip \
     && python3 -m pip install cython prettytable
 
