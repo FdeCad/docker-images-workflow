@@ -33,6 +33,10 @@ env:
 
   AI_RUNNER: ${{ vars.AI_RUNNER || 'opencode' }}
   GITCODE_FORK_REPO: ${{ vars.GITCODE_FORK_REPO || '' }}
+  # 自动修复连续失败时是否回帖通知 PR。默认 false：回帖是 outward-facing 动作，
+  # 且落在源仓库（别人的仓库）上，不该是自动链路的默认行为——失败信号由 job
+  # 失败本身 + ci-fix-log 分支产物承载已足够。需要人工通知时设为 true。
+  PR_COMMENT_ON_FAILURE: ${{ vars.PR_COMMENT_ON_FAILURE || '' }}
   # AI_MODEL: opencode 时填模型名如 deepseek/deepseek-v4-pro；
   #           claude-code-account 时填 claude-sonnet-4-6
   AI_MODEL: ${{ vars.AI_MODEL || 'deepseek/deepseek-v4-pro' }}
@@ -525,6 +529,21 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+
+      # Variable `GITCODE_FORK_REPO` 实际被填成了完整 URL
+      # （https://gitcode.com/m0_46560176/openeuler-docker-images），而本 job 里
+      # 三处消费点（git remote add fork、git remote set-url、Fix PR head）都按
+      # `owner/repo` 拼接，会拼出 `gitcode.com/https://gitcode.com/m0_....git`
+      # 和 head `https::fix/4723`。与其要求配置方记住格式，不如消费侧先归一。
+      - name: Normalize GITCODE_FORK_REPO
+        if: env.SOURCE_PLATFORM == 'gitcode'
+        run: |
+          python - <<'EOF' >> "$GITHUB_ENV"
+          import os, sys
+          sys.path.insert(0, '.')
+          from scripts.lib.stage_common import normalize_repo
+          print(f"GITCODE_FORK_REPO={normalize_repo(os.environ.get('GITCODE_FORK_REPO', ''))}")
+          EOF
 
       - name: Checkout source repo (GitHub)
         if: env.SOURCE_PLATFORM != 'gitcode'

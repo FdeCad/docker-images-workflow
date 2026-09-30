@@ -14,6 +14,7 @@ ci-data 分支读写工具
 
 import os
 import re
+import time
 import base64
 import requests
 from datetime import datetime
@@ -38,10 +39,32 @@ def _headers() -> dict:
     }
 
 
+def _retry(fn, attempts: int = 4, base_delay: float = 1.5, label: str = ''):
+    """对 Contents API 调用做有限重试（传输层异常与 5xx）。
+
+    **Why:** Contents API 偶发 500/502。2026-09-30 的 build-fix-amd64 就因为在写
+    `dockerfile-target` 时吃到一次 500 而没有重试，整个阶段直接失败、链路中断——
+    一次瞬时抖动不该有这种杀伤力。4xx 不重试（409 sha 冲突、401 权限这类重试无用）。
+    """
+    last = None
+    for i in range(attempts):
+        try:
+            resp = fn()
+        except requests.RequestException as e:
+            last = e
+        else:
+            if resp.status_code < 500:
+                return resp
+            last = requests.HTTPError(f'HTTP {resp.status_code} from {resp.url}', response=resp)
+        if i < attempts - 1:
+            time.sleep(base_delay * (2 ** i))
+    raise last
+
+
 def _ensure_ci_fix_branch() -> None:
     """ci-fix-log 分支不存在时从 main 创建。"""
     url = f"{GITHUB_API}/repos/{_repo()}/git/refs/heads/{CI_FIX_BRANCH}"
-    if requests.get(url, headers=_headers(), timeout=15).ok:
+    if _retry(lambda: requests.get(url, headers=_headers(), timeout=15)).ok:
         return
     resp = requests.get(
         f"{GITHUB_API}/repos/{_repo()}/git/refs/heads/main",
@@ -60,7 +83,7 @@ def _ensure_ci_fix_branch() -> None:
 def read_file(path: str, branch: str = CI_FIX_BRANCH) -> str:
     """从指定分支读取文件，不存在返回空字符串。"""
     url = f"{GITHUB_API}/repos/{_repo()}/contents/{path}"
-    resp = requests.get(url, headers=_headers(), params={'ref': branch}, timeout=30)
+    resp = _retry(lambda: requests.get(url, headers=_headers(), params={'ref': branch}, timeout=30))
     if resp.status_code == 404:
         return ''
     resp.raise_for_status()
@@ -72,21 +95,20 @@ def write_file(path: str, content: str, message: str, branch: str = CI_FIX_BRANC
     if branch == CI_FIX_BRANCH:
         _ensure_ci_fix_branch()
     url = f"{GITHUB_API}/repos/{_repo()}/contents/{path}"
+    encoded = base64.b64encode(content.encode('utf-8')).decode('ascii')
 
-    sha = None
-    resp = requests.get(url, headers=_headers(), params={'ref': branch}, timeout=30)
-    if resp.ok:
-        sha = resp.json().get('sha')
+    def _put():
+        # 每次尝试都重新取 sha：上一次尝试若已在服务端生效，旧 sha 会让这次撞 409
+        sha = None
+        head = requests.get(url, headers=_headers(), params={'ref': branch}, timeout=30)
+        if head.ok:
+            sha = head.json().get('sha')
+        payload: dict = {'message': message, 'content': encoded, 'branch': branch}
+        if sha:
+            payload['sha'] = sha
+        return requests.put(url, headers=_headers(), json=payload, timeout=30)
 
-    payload: dict = {
-        'message': message,
-        'content': base64.b64encode(content.encode('utf-8')).decode('ascii'),
-        'branch': branch,
-    }
-    if sha:
-        payload['sha'] = sha
-
-    requests.put(url, headers=_headers(), json=payload, timeout=30).raise_for_status()
+    _retry(_put).raise_for_status()
 
 
 # ── per-PR 路径（ci-fix-log 分支）───────────────────────────────────────
